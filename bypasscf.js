@@ -217,6 +217,81 @@ function delayClick(time) {
   });
 }
 
+async function injectAutomationWithRetry(
+  page,
+  specificUser,
+  scriptToEval,
+  isAutoLike,
+  maxAttempts = 5,
+) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const currentUrl = page.url();
+    try {
+      const result = await page.evaluate(
+        (specificUser, scriptToEval, isAutoLike) => {
+          const href = window.location.href;
+
+          if (!window.__autoInjected) {
+            localStorage.setItem("read", "true");
+            localStorage.setItem("specificUser", specificUser);
+            localStorage.setItem("isFirstRun", "false");
+            localStorage.setItem("autoLikeEnabled", String(isAutoLike));
+            try {
+              eval(scriptToEval);
+              window.__autoInjected = true;
+              window.__autoInjectionSource = "fallback-evaluate";
+            } catch (e) {
+              return {
+                ok: false,
+                href,
+                reason: `[auto-read] eval external script failed: ${
+                  e && e.message ? e.message : e
+                }`,
+              };
+            }
+          }
+
+          return {
+            ok: true,
+            href,
+            source: window.__autoInjectionSource || "unknown",
+            read: localStorage.getItem("read"),
+            autoLikeEnabled: localStorage.getItem("autoLikeEnabled"),
+          };
+        },
+        specificUser,
+        scriptToEval,
+        isAutoLike,
+      );
+
+      if (result && result.ok) {
+        console.log(
+          `[auto-read] Automation injected successfully on ${result.href} via ${result.source} (attempt ${attempt}/${maxAttempts}), read=${result.read}, autoLikeEnabled=${result.autoLikeEnabled}`,
+        );
+        return true;
+      }
+
+      console.warn(
+        `[auto-read] Injection attempt ${attempt}/${maxAttempts} reported failure on ${currentUrl}: ${
+          result && result.reason ? result.reason : "unknown reason"
+        }`,
+      );
+    } catch (e) {
+      console.warn(
+        `[auto-read] Injection attempt ${attempt}/${maxAttempts} failed on ${currentUrl}: ${
+          e && e.message ? e.message : e
+        }`,
+      );
+    }
+
+    if (attempt < maxAttempts) {
+      await delayClick(2000);
+    }
+  }
+
+  return false;
+}
+
 (async () => {
   try {
     // 有Cookie则跳过密码数量校验
@@ -371,11 +446,14 @@ async function launchBrowserForUser(username, password, cookie = null) {
       }
     });
     page.on("console", async (msg) => {
-      // console.log("PAGE LOG:", msg.text());
+      const pageLog = msg.text();
+      if (pageLog.includes("[auto-read]")) {
+        console.log(`PAGE ${msg.type().toUpperCase()}: ${pageLog}`);
+      }
       // 使用一个标志变量来检测是否已经刷新过页面
       if (
         !page._isReloaded &&
-        msg.text().includes("the server responded with a status of 429")
+        pageLog.includes("the server responded with a status of 429")
       ) {
         // 设置标志变量为 true，表示即将刷新页面
         page._isReloaded = true;
@@ -464,12 +542,23 @@ async function launchBrowserForUser(username, password, cookie = null) {
     await page.evaluateOnNewDocument(
       (...args) => {
         const [specificUser, scriptToEval, isAutoLike] = args;
-        localStorage.setItem("read", true);
+        localStorage.setItem("read", "true");
         localStorage.setItem("specificUser", specificUser);
         localStorage.setItem("isFirstRun", "false");
-        localStorage.setItem("autoLikeEnabled", isAutoLike);
-        console.log("当前点赞用户：", specificUser);
-        eval(scriptToEval);
+        localStorage.setItem("autoLikeEnabled", String(isAutoLike));
+        console.log("[auto-read] 当前点赞用户：", specificUser);
+        try {
+          eval(scriptToEval);
+          window.__autoInjected = true;
+          window.__autoInjectionSource = "evaluateOnNewDocument";
+          console.log("[auto-read] init script injected on", window.location.href);
+        } catch (e) {
+          console.error(
+            `[auto-read] init script injection failed: ${
+              e && e.message ? e.message : e
+            }`,
+          );
+        }
       },
       specificUser,
       externalScript,
@@ -496,25 +585,19 @@ async function launchBrowserForUser(username, password, cookie = null) {
         timeout: parseInt(process.env.NAV_TIMEOUT_MS || process.env.NAV_TIMEOUT || "120000", 10),
       });
     }
+    console.log(`[auto-read] Navigated to ${page.url()} before injection verification`);
     // Ensure automation injected after navigation (fallback in case init-script failed)
-    try {
-      await page.evaluate(
-        (specificUser, scriptToEval, isAutoLike) => {
-          if (!window.__autoInjected) {
-            localStorage.setItem("read", true);
-            localStorage.setItem("specificUser", specificUser);
-            localStorage.setItem("isFirstRun", "false");
-            localStorage.setItem("autoLikeEnabled", isAutoLike);
-            try { eval(scriptToEval); } catch (e) { console.error("eval external script failed", e); }
-            window.__autoInjected = true;
-          }
-        },
-        specificUser,
-        externalScript,
-        isAutoLike
+    const injected = await injectAutomationWithRetry(
+      page,
+      specificUser,
+      externalScript,
+      isAutoLike,
+      5,
+    );
+    if (!injected) {
+      console.warn(
+        `[auto-read] Automation injection could not be verified after navigation on ${page.url()}`,
       );
-    } catch (e) {
-      console.warn(`Post-navigation inject failed: ${e && e.message ? e.message : e}`);
     }
     if (token && chatId) {
       sendToTelegram(`${username} 登录成功`);
