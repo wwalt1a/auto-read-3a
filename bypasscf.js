@@ -292,6 +292,97 @@ async function injectAutomationWithRetry(
   return false;
 }
 
+async function getLoginState(page) {
+  const pageTitle = await page.title().catch(() => "");
+  return await page.evaluate((pageTitle) => {
+    const alertError = document.querySelector(".alert.alert-error");
+    const alertText = alertError ? alertError.innerText.trim() : "";
+    return {
+      href: window.location.href,
+      pageTitle,
+      avatarImg: !!document.querySelector("img.avatar"),
+      authButtons: !!document.querySelector("span.auth-buttons"),
+      loginButton:
+        !!document.querySelector(".login-button") ||
+        !!document.querySelector("#login-button"),
+      alertText,
+    };
+  }, pageTitle);
+}
+
+async function waitForLoginSuccess(page, username, maxAttempts = 6) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let state;
+    try {
+      state = await getLoginState(page);
+    } catch (e) {
+      console.warn(
+        `[login-check] Failed to inspect login state for ${maskUsername(username)} on attempt ${attempt}/${maxAttempts}: ${
+          e && e.message ? e.message : e
+        }`,
+      );
+      if (attempt < maxAttempts) {
+        await delayClick(2000);
+        continue;
+      }
+      throw e;
+    }
+
+    if (state.avatarImg) {
+      console.log(
+        `[login-check] Login verified for ${maskUsername(username)} on ${state.href} (attempt ${attempt}/${maxAttempts})`,
+      );
+      return state;
+    }
+
+    if (state.authButtons && state.alertText) {
+      throw new Error(
+        `登录失败：${maskUsername(username)} 页面显示未登录状态，错误信息：${state.alertText}`,
+      );
+    }
+
+    if (state.authButtons && attempt === maxAttempts) {
+      throw new Error(
+        `登录失败：${maskUsername(username)} 页面显示未登录状态（auth-buttons），当前页面：${state.href}`,
+      );
+    }
+
+    console.warn(
+      `[login-check] Avatar not ready for ${maskUsername(username)} on ${state.href} (attempt ${attempt}/${maxAttempts}), title="${state.pageTitle}", authButtons=${state.authButtons}, loginButton=${state.loginButton}, alert="${
+        state.alertText || "none"
+      }"`,
+    );
+
+    if (attempt < maxAttempts) {
+      await delayClick(2000);
+      if (attempt === 3) {
+        try {
+          console.log(
+            `[login-check] Reloading ${state.href} for ${maskUsername(username)} before next verification attempt`,
+          );
+          await page.reload({
+            waitUntil: "domcontentloaded",
+            timeout: parseInt(
+              process.env.NAV_TIMEOUT_MS ||
+                process.env.NAV_TIMEOUT ||
+                "120000",
+              10,
+            ),
+          });
+        } catch (e) {
+          console.warn(
+            `[login-check] Reload failed for ${maskUsername(username)}: ${
+              e && e.message ? e.message : e
+            }`,
+          );
+        }
+      }
+    }
+  }
+
+  throw new Error(`登录失败：${maskUsername(username)} 未找到 avatar`);
+}
+
 (async () => {
   try {
     // 有Cookie则跳过密码数量校验
@@ -498,20 +589,11 @@ async function launchBrowserForUser(username, password, cookie = null) {
       console.log("登录操作");
       await login(page, username, password);
     }
-    // 查找具有类名 "avatar" 的 img 元素验证登录是否成功
-    // 若存在 span.auth-buttons 则说明处于未登录状态
-    const avatarImg = await page.$("img.avatar");
-    const authButtons = await page.$("span.auth-buttons");
-
-    if (authButtons) {
-      console.log("找到 auth-buttons，用户未登录，登录失败");
-      throw new Error("登录失败：页面显示未登录状态（auth-buttons）");
-    } else if (avatarImg) {
-      console.log("找到avatarImg，登录成功");
-    } else {
-      console.log("未找到avatarImg，登录失败");
-      throw new Error("登录失败");
-    }
+    // 多账号并发时页面状态稳定得稍慢，给登录态校验一点重试空间
+    const loginState = await waitForLoginSuccess(page, username, 6);
+    console.log(
+      `找到avatarImg，登录成功，当前页面：${loginState.href}，标题：${loginState.pageTitle}`,
+    );
 
     //真正执行阅读脚本
     let externalScriptPath;
