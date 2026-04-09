@@ -8,6 +8,7 @@
 // @match        https://linux.do/*
 // @match        https://meta.appinn.net/*
 // @match        https://community.openai.com/
+// @match        https://3a.lol/*
 // @match        https://idcflare.com/*
 // @exclude      https://linux.do/a/9611/0
 // @grant        none
@@ -25,6 +26,7 @@
     "https://meta.discourse.org",
     "https://meta.appinn.net",
     "https://community.openai.com",
+    "https://3a.lol",
     "https://idcflare.com/",
   ];
   const commentLimit = 1000;
