@@ -30,8 +30,17 @@
     "https://idcflare.com/",
   ];
   const commentLimit = 1000;
-  const topicListLimit = 100;
+  const topicListLimit = 30;
   const likeLimit = 50;
+  const delay = 3000;
+  const minTopicDwellMs = 15000;
+  const maxTopicDwellMs = 30000;
+  const nextTopicJitterMs = 2500;
+  const cooldownCheckIntervalMs = 5000;
+  const minScrollStep = 8;
+  const maxScrollStep = 16;
+  const minScrollDelayMs = 110;
+  const maxScrollDelayMs = 180;
   // 获取当前页面的URL
   const currentURL = window.location.href;
 
@@ -66,15 +75,155 @@
     localStorage.setItem("autoLikeEnabled", "false"); //默认关闭自动点赞
     console.log("执行了初始数据更新操作");
   }
-  const delay = 2000; // 滚动检查的间隔（毫秒）
   let scrollInterval = null;
   let checkScrollTimeout = null;
   let autoLikeInterval = null;
+  let pendingTopicOpenTimeout = null;
+  let pendingTopicOpenAt = 0;
+  let lastCooldownLogAt = 0;
 
-  function scrollToBottomSlowly(distancePerStep = 20, delayPerStep = 50) {
+  function stopScrolling() {
     if (scrollInterval !== null) {
       clearInterval(scrollInterval);
+      scrollInterval = null;
     }
+  }
+
+  function clearPendingTopicOpen() {
+    if (pendingTopicOpenTimeout !== null) {
+      clearTimeout(pendingTopicOpenTimeout);
+      pendingTopicOpenTimeout = null;
+      pendingTopicOpenAt = 0;
+    }
+  }
+
+  function scheduleCheckScroll(waitMs = delay) {
+    if (checkScrollTimeout !== null) {
+      clearTimeout(checkScrollTimeout);
+    }
+    checkScrollTimeout = setTimeout(checkScroll, waitMs);
+  }
+
+  function isTopicPage() {
+    return window.location.pathname.includes("/t/topic/");
+  }
+
+  function getCurrentPageKey() {
+    return `${window.location.pathname}${window.location.search}`;
+  }
+
+  function calculateTopicDwellMs() {
+    const bodyHeight = document.body.scrollHeight || 0;
+    const viewportHeight = window.innerHeight || 0;
+    const baseMs = 12000 + Math.floor(Math.random() * 6000);
+    const heightFactorMs = Math.min(
+      9000,
+      Math.max(0, bodyHeight - viewportHeight) * 2
+    );
+    return Math.max(
+      minTopicDwellMs,
+      Math.min(maxTopicDwellMs, baseMs + heightFactorMs)
+    );
+  }
+
+  function ensureTopicReadState() {
+    if (!isTopicPage()) {
+      return;
+    }
+
+    const pageKey = getCurrentPageKey();
+    const storedPageKey = localStorage.getItem("autoReadPageKey");
+    if (storedPageKey !== pageKey) {
+      const dwellMs = calculateTopicDwellMs();
+      localStorage.setItem("autoReadPageKey", pageKey);
+      localStorage.setItem("autoReadPageStartedAt", Date.now().toString());
+      localStorage.setItem("autoReadPageDwellMs", dwellMs.toString());
+      console.log(
+        `[auto-read] 进入新主题 ${pageKey}，计划停留 ${Math.ceil(
+          dwellMs / 1000
+        )} 秒`
+      );
+    }
+  }
+
+  function getRemainingDwellMs() {
+    if (!isTopicPage()) {
+      return 0;
+    }
+
+    ensureTopicReadState();
+    const startedAt = parseInt(
+      localStorage.getItem("autoReadPageStartedAt") || "0",
+      10
+    );
+    const dwellMs = parseInt(
+      localStorage.getItem("autoReadPageDwellMs") || "0",
+      10
+    );
+    if (!startedAt || !dwellMs) {
+      return 0;
+    }
+    return Math.max(0, startedAt + dwellMs - Date.now());
+  }
+
+  function getCooldownRemainingMs() {
+    const cooldownUntil = parseInt(
+      localStorage.getItem("autoReadCooldownUntil") || "0",
+      10
+    );
+    if (!cooldownUntil) {
+      return 0;
+    }
+
+    const remainingMs = cooldownUntil - Date.now();
+    if (remainingMs <= 0) {
+      localStorage.removeItem("autoReadCooldownUntil");
+      return 0;
+    }
+
+    return remainingMs;
+  }
+
+  function getScrollSettings() {
+    return {
+      distancePerStep:
+        minScrollStep +
+        Math.floor(Math.random() * (maxScrollStep - minScrollStep + 1)),
+      delayPerStep:
+        minScrollDelayMs +
+        Math.floor(
+          Math.random() * (maxScrollDelayMs - minScrollDelayMs + 1)
+        ),
+    };
+  }
+
+  function scheduleOpenNextTopic(reason, waitMs) {
+    const jitterMs = Math.floor(Math.random() * nextTopicJitterMs);
+    const totalWaitMs = waitMs + jitterMs;
+    const nextRunAt = Date.now() + totalWaitMs;
+
+    if (
+      pendingTopicOpenTimeout !== null &&
+      pendingTopicOpenAt > 0 &&
+      pendingTopicOpenAt <= nextRunAt + 500
+    ) {
+      return;
+    }
+
+    clearPendingTopicOpen();
+    pendingTopicOpenAt = nextRunAt;
+    console.log(
+      `[auto-read] ${reason}，将在 ${Math.ceil(totalWaitMs / 1000)} 秒后打开下一篇`
+    );
+    pendingTopicOpenTimeout = setTimeout(() => {
+      pendingTopicOpenTimeout = null;
+      pendingTopicOpenAt = 0;
+      checkScroll();
+    }, totalWaitMs);
+  }
+
+  function scrollToBottomSlowly(distancePerStep = 20, delayPerStep = 50) {
+    stopScrolling();
     scrollInterval = setInterval(() => {
       window.scrollBy(0, distancePerStep);
     }, delayPerStep); // 每50毫秒滚动20像素
@@ -131,6 +280,9 @@
   }
 
   function openNewTopic() {
+    stopScrolling();
+    clearPendingTopicOpen();
+
     let topicListStr = localStorage.getItem("topicList");
     let topicList = topicListStr ? JSON.parse(topicListStr) : [];
 
@@ -145,6 +297,9 @@
     if (topicList.length > 0) {
       const topic = topicList.shift();
       localStorage.setItem("topicList", JSON.stringify(topicList));
+      localStorage.removeItem("autoReadPageKey");
+      localStorage.removeItem("autoReadPageStartedAt");
+      localStorage.removeItem("autoReadPageDwellMs");
       if (topic.last_read_post_number) {
         window.location.href = `${BASE_URL}/t/topic/${topic.id}/${topic.last_read_post_number}`;
       } else {
@@ -155,20 +310,47 @@
 
   // 检查是否已滚动到底部(不断重复执行),到底部时跳转到下一个话题
   function checkScroll() {
-    if (localStorage.getItem("read")) {
-      if (
-        window.innerHeight + window.scrollY >=
-        document.body.offsetHeight - 100
-      ) {
-        console.log("已滚动到底部");
-        openNewTopic();
-      } else {
-        scrollToBottomSlowly();
-        if (checkScrollTimeout !== null) {
-          clearTimeout(checkScrollTimeout);
-        }
-        checkScrollTimeout = setTimeout(checkScroll, delay);
+    if (localStorage.getItem("read") !== "true") {
+      stopScrolling();
+      clearPendingTopicOpen();
+      return;
+    }
+
+    const cooldownRemainingMs = getCooldownRemainingMs();
+    if (cooldownRemainingMs > 0) {
+      stopScrolling();
+      if (Date.now() - lastCooldownLogAt > 10000) {
+        console.log(
+          `[auto-read] 429 冷却中，剩余 ${Math.ceil(
+            cooldownRemainingMs / 1000
+          )} 秒`
+        );
+        lastCooldownLogAt = Date.now();
       }
+      scheduleCheckScroll(
+        Math.min(cooldownRemainingMs + 500, cooldownCheckIntervalMs)
+      );
+      return;
+    }
+
+    ensureTopicReadState();
+    const remainingDwellMs = getRemainingDwellMs();
+    if (
+      window.innerHeight + window.scrollY >=
+      document.body.offsetHeight - 100
+    ) {
+      stopScrolling();
+      if (remainingDwellMs > 0) {
+        scheduleOpenNextTopic("已到底部，继续停留模拟阅读", remainingDwellMs);
+        scheduleCheckScroll(Math.min(remainingDwellMs, delay));
+      } else {
+        console.log("[auto-read] 已到底部且停留时间已足够，打开下一篇");
+        openNewTopic();
+      }
+    } else {
+      const { distancePerStep, delayPerStep } = getScrollSettings();
+      scrollToBottomSlowly(distancePerStep, delayPerStep);
+      scheduleCheckScroll(delay);
     }
   }
 
@@ -293,10 +475,8 @@
     localStorage.setItem("read", newReadState.toString());
     button.textContent = newReadState ? "停止阅读" : "开始阅读";
     if (!newReadState) {
-      if (scrollInterval !== null) {
-        clearInterval(scrollInterval);
-        scrollInterval = null;
-      }
+      stopScrolling();
+      clearPendingTopicOpen();
       if (checkScrollTimeout !== null) {
         clearTimeout(checkScrollTimeout);
         checkScrollTimeout = null;
