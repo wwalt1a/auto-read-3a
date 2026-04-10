@@ -478,6 +478,59 @@
     };
   }
 
+  function collectPotentialLikeButtons() {
+    const selectorSpecs = [
+      {
+        selector: ".discourse-reactions-reaction-button",
+        source: "discourse-reactions-reaction-button",
+      },
+      { selector: "button.toggle-like", source: "button.toggle-like" },
+      { selector: "button.like", source: "button.like" },
+      {
+        selector: ".topic-post button[title], .topic-post button[aria-label]",
+        source: "topic-post-labelled-button",
+      },
+      {
+        selector: ".post-controls button[title], .post-controls button[aria-label]",
+        source: "post-controls-labelled-button",
+      },
+      {
+        selector: ".topic-post button",
+        source: "topic-post-button",
+      },
+      {
+        selector: ".post-controls button",
+        source: "post-controls-button",
+      },
+    ];
+
+    const buttonMap = new Map();
+
+    selectorSpecs.forEach(({ selector, source }) => {
+      document.querySelectorAll(selector).forEach((node) => {
+        const button = node instanceof HTMLButtonElement
+          ? node
+          : node.closest("button");
+        if (!button) {
+          return;
+        }
+        if (!buttonMap.has(button)) {
+          buttonMap.set(button, {
+            button,
+            sources: [source],
+          });
+        } else {
+          buttonMap.get(button).sources.push(source);
+        }
+      });
+    });
+
+    return Array.from(buttonMap.values()).map(({ button, sources }) => ({
+      button,
+      sources: Array.from(new Set(sources)),
+    }));
+  }
+
   function isAlreadyLikedButton(info) {
     if (info.ariaPressed === "true") {
       return true;
@@ -503,15 +556,18 @@
       return true;
     }
 
+     const classPattern = /(toggle-like|like-button|(^|\s)like(\s|$)|heart)/i;
+     if (classPattern.test(info.className)) {
+      return true;
+    }
+
     return info.label === "" && info.ariaPressed === "false";
   }
 
   function autoLike() {
     console.log(`[auto-read] Initial clickCounter: ${clickCounter}`);
-    // 寻找所有的discourse-reactions-reaction-button
-    const buttons = Array.from(document.querySelectorAll(
-      ".discourse-reactions-reaction-button"
-    ));
+    const buttonEntries = collectPotentialLikeButtons();
+    const buttons = buttonEntries.map(({ button }) => button);
     updateAutoReadStatus({
       autoLikeScanAt: Date.now(),
       reactionButtonCount: buttons.length,
@@ -523,13 +579,14 @@
         autoLikeLastResult: "no-reaction-buttons",
       });
       console.error(
-        "[auto-read] No buttons found with the selector '.discourse-reactions-reaction-button'"
+        "[auto-read] No candidate buttons found in topic-post/post-controls selectors"
       );
       return;
     }
-    const buttonInfos = buttons.map((button, index) => ({
+    const buttonInfos = buttonEntries.map(({ button, sources }, index) => ({
       button,
       index,
+      sources,
       info: getButtonDebugInfo(button),
     }));
     const likeCandidates = buttonInfos.filter(({ info }) =>
@@ -541,7 +598,10 @@
         likeCandidates.length > 0 ? "candidates-found" : "no-candidates",
       sampleButtonLabels: buttonInfos
         .slice(0, 5)
-        .map(({ index, info }) => `#${index + 1}[${info.label || "empty"}]`),
+        .map(
+          ({ index, info, sources }) =>
+            `#${index + 1}[${info.label || "empty"}]@${sources.join("+")}`
+        ),
     });
     console.log(
       `[auto-read] Found ${buttons.length} reaction buttons, ${likeCandidates.length} like candidates.`
@@ -550,14 +610,17 @@
       console.log(
         `[auto-read] Sample button labels: ${buttonInfos
           .slice(0, 5)
-          .map(({ index, info }) => `#${index + 1}[${info.label || "empty"}]`)
+          .map(
+            ({ index, info, sources }) =>
+              `#${index + 1}[${info.label || "empty"}]@${sources.join("+")}`
+          )
           .join("; ")}`
       );
       return;
     }
 
     // 逐个点击找到的按钮
-    likeCandidates.forEach(({ button, index, info }) => {
+    likeCandidates.forEach(({ button, index, info, sources }) => {
       if (clickCounter >= likeLimit) {
         return;
       }
@@ -572,7 +635,7 @@
         console.log(
           `[auto-read] 跳过第${index + 1}个点赞候选按钮（未通过概率判断），label=${
             info.label || "empty"
-          }`
+          }, sources=${sources.join("+")}`
         );
         return;
       }
@@ -587,7 +650,7 @@
         console.log(
           `[auto-read] Clicked like button ${index + 1}, label=${
             info.label || "empty"
-          }, delay=${randomDelay}ms`
+          }, delay=${randomDelay}ms, sources=${sources.join("+")}`
         );
         clickCounter++; // 更新点击计数器
         updateAutoReadStatus({
