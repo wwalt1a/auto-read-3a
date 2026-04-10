@@ -47,6 +47,9 @@
   const maxScrollStep = 16;
   const minScrollDelayMs = 110;
   const maxScrollDelayMs = 180;
+  const initialAutoLikeDelayMs = 1800;
+  const autoLikeRetryDelayMs = 2500;
+  const maxAutoLikeScanAttempts = 6;
   // 获取当前页面的URL
   const currentURL = window.location.href;
 
@@ -88,6 +91,7 @@
   let pendingTopicOpenAt = 0;
   let lastCooldownLogAt = 0;
   let pageAutomationInitialized = false;
+  let autoLikeScanTimeout = null;
 
   function updateAutoReadStatus(patch) {
     window.__autoReadStatus = {
@@ -110,6 +114,13 @@
       clearTimeout(pendingTopicOpenTimeout);
       pendingTopicOpenTimeout = null;
       pendingTopicOpenAt = 0;
+    }
+  }
+
+  function clearAutoLikeScanTimeout() {
+    if (autoLikeScanTimeout !== null) {
+      clearTimeout(autoLikeScanTimeout);
+      autoLikeScanTimeout = null;
     }
   }
 
@@ -411,8 +422,16 @@
       console.log("[auto-read] 执行正常的滚动和检查逻辑");
       checkScroll();
       if (autoLikeEnabled) {
-        console.log("[auto-read] 即将尝试自动点赞");
-        autoLike();
+        console.log(
+          `[auto-read] 即将尝试自动点赞，首次扫描将在 ${Math.ceil(
+            initialAutoLikeDelayMs / 1000
+          )} 秒后开始`
+        );
+        scheduleAutoLikeScan(
+          "automation-start",
+          initialAutoLikeDelayMs,
+          1
+        );
       } else {
         console.log("[auto-read] 本页跳过自动点赞，因为 autoLikeEnabled=false");
       }
@@ -564,14 +583,25 @@
     return info.label === "" && info.ariaPressed === "false";
   }
 
-  function autoLike() {
-    console.log(`[auto-read] Initial clickCounter: ${clickCounter}`);
+  function scheduleAutoLikeScan(reason, waitMs, attempt) {
+    clearAutoLikeScanTimeout();
+    autoLikeScanTimeout = setTimeout(() => {
+      autoLikeScanTimeout = null;
+      autoLike(attempt, reason);
+    }, waitMs);
+  }
+
+  function autoLike(attempt = 1, reason = "unspecified") {
+    console.log(
+      `[auto-read] autoLike scan attempt ${attempt}/${maxAutoLikeScanAttempts} (${reason}), clickCounter=${clickCounter}`
+    );
     const buttonEntries = collectPotentialLikeButtons();
     const buttons = buttonEntries.map(({ button }) => button);
     updateAutoReadStatus({
       autoLikeScanAt: Date.now(),
       reactionButtonCount: buttons.length,
       clickCounter,
+      autoLikeScanAttempt: attempt,
     });
     if (buttons.length === 0) {
       updateAutoReadStatus({
@@ -581,6 +611,18 @@
       console.error(
         "[auto-read] No candidate buttons found in topic-post/post-controls selectors"
       );
+      if (attempt < maxAutoLikeScanAttempts) {
+        console.log(
+          `[auto-read] 未找到可扫描按钮，将在 ${Math.ceil(
+            autoLikeRetryDelayMs / 1000
+          )} 秒后重试`
+        );
+        scheduleAutoLikeScan(
+          "no-reaction-buttons",
+          autoLikeRetryDelayMs,
+          attempt + 1
+        );
+      }
       return;
     }
     const buttonInfos = buttonEntries.map(({ button, sources }, index) => ({
@@ -616,10 +658,23 @@
           )
           .join("; ")}`
       );
+      if (attempt < maxAutoLikeScanAttempts) {
+        console.log(
+          `[auto-read] 找到按钮但没有识别出点赞候选，将在 ${Math.ceil(
+            autoLikeRetryDelayMs / 1000
+          )} 秒后重试`
+        );
+        scheduleAutoLikeScan(
+          "no-like-candidates",
+          autoLikeRetryDelayMs,
+          attempt + 1
+        );
+      }
       return;
     }
 
     // 逐个点击找到的按钮
+    let clickScheduled = false;
     likeCandidates.forEach(({ button, index, info, sources }) => {
       if (clickCounter >= likeLimit) {
         return;
@@ -642,6 +697,7 @@
 
       // 点赞间隔时间也随机（2~5秒之间）
       const randomDelay = 2000 + Math.floor(Math.random() * 3000);
+      clickScheduled = true;
 
       autoLikeInterval = setTimeout(() => {
         // 模拟点击
@@ -675,6 +731,19 @@
         }
       }, index * randomDelay); // 每次点赞的延迟为随机值
     });
+
+    if (!clickScheduled && attempt < maxAutoLikeScanAttempts) {
+      console.log(
+        `[auto-read] 本轮未安排实际点赞点击，将在 ${Math.ceil(
+          autoLikeRetryDelayMs / 1000
+        )} 秒后重试`
+      );
+      scheduleAutoLikeScan(
+        "no-click-scheduled",
+        autoLikeRetryDelayMs,
+        attempt + 1
+      );
+    }
   }
   const button = document.createElement("button");
   // 初始化按钮文本基于当前的阅读状态
@@ -699,6 +768,7 @@
     if (!newReadState) {
       stopScrolling();
       clearPendingTopicOpen();
+      clearAutoLikeScanTimeout();
       if (checkScrollTimeout !== null) {
         clearTimeout(checkScrollTimeout);
         checkScrollTimeout = null;
