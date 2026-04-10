@@ -357,18 +357,24 @@
   // 入口函数
   window.addEventListener("load", () => {
     checkFirstRun();
+    const readEnabled = localStorage.getItem("read") === "true";
+    const autoLikeEnabled = isAutoLikeEnabled();
     console.log(
-      "autoRead",
-      localStorage.getItem("read"),
-      "autoLikeEnabled",
-      localStorage.getItem("autoLikeEnabled")
+      `[auto-read] load handler: read=${
+        readEnabled ? "enabled" : "disabled"
+      }, auto-like=${autoLikeEnabled ? "enabled" : "disabled"}`
     );
-    if (localStorage.getItem("read") === "true") {
-      console.log("执行正常的滚动和检查逻辑");
+    if (readEnabled) {
+      console.log("[auto-read] 执行正常的滚动和检查逻辑");
       checkScroll();
-      if (isAutoLikeEnabled()) {
+      if (autoLikeEnabled) {
+        console.log("[auto-read] 即将尝试自动点赞");
         autoLike();
+      } else {
+        console.log("[auto-read] 本页跳过自动点赞，因为 autoLikeEnabled=false");
       }
+    } else {
+      console.log("[auto-read] 本页未开启自动阅读，跳过滚动和点赞");
     }
   });
 
