@@ -240,6 +240,11 @@ async function injectAutomationWithRetry(
               eval(scriptToEval);
               window.__autoInjected = true;
               window.__autoInjectionSource = "fallback-evaluate";
+              if (document.readyState !== "loading") {
+                window.dispatchEvent(new Event("load"));
+                window.__autoInjectionSource =
+                  "fallback-evaluate-dispatch-load";
+              }
             } catch (e) {
               return {
                 ok: false,
@@ -290,6 +295,100 @@ async function injectAutomationWithRetry(
   }
 
   return false;
+}
+
+function createNavigationAwareInjectionController(
+  page,
+  specificUser,
+  scriptToEval,
+  isAutoLike,
+) {
+  let verificationTimer = null;
+  let verificationInFlight = null;
+  let queuedReason = null;
+
+  async function runVerification(reason, maxAttempts = 5) {
+    if (typeof page.isClosed === "function" && page.isClosed()) {
+      return false;
+    }
+
+    if (verificationInFlight) {
+      queuedReason = reason;
+      return verificationInFlight;
+    }
+
+    verificationInFlight = (async () => {
+      const currentUrl = page.url();
+      console.log(
+        `[auto-read] Verifying automation after ${reason} on ${currentUrl}`,
+      );
+      const injected = await injectAutomationWithRetry(
+        page,
+        specificUser,
+        scriptToEval,
+        isAutoLike,
+        maxAttempts,
+      );
+
+      if (!injected) {
+        console.warn(
+          `[auto-read] Automation injection could not be verified after ${reason} on ${page.url()}`,
+        );
+      }
+
+      return injected;
+    })();
+
+    try {
+      return await verificationInFlight;
+    } finally {
+      verificationInFlight = null;
+      if (queuedReason) {
+        const nextReason = queuedReason;
+        queuedReason = null;
+        scheduleVerification(nextReason, 1200);
+      }
+    }
+  }
+
+  function scheduleVerification(reason, delayMs = 1200) {
+    if (typeof page.isClosed === "function" && page.isClosed()) {
+      return;
+    }
+
+    if (verificationTimer) {
+      clearTimeout(verificationTimer);
+    }
+
+    verificationTimer = setTimeout(() => {
+      verificationTimer = null;
+      runVerification(reason).catch((e) => {
+        console.warn(
+          `[auto-read] Scheduled verification failed after ${reason}: ${
+            e && e.message ? e.message : e
+          }`,
+        );
+      });
+    }, delayMs);
+  }
+
+  page.on("framenavigated", (frame) => {
+    if (frame.parentFrame() !== null) return;
+    const url = frame.url();
+    console.log(`[auto-read] Main frame navigated to ${url}`);
+    scheduleVerification(`main-frame navigation to ${url}`, 1500);
+  });
+
+  page.on("load", () => {
+    const url = page.url();
+    console.log(`[auto-read] Page load observed on ${url}`);
+    scheduleVerification(`page load on ${url}`, 800);
+  });
+
+  return {
+    runVerification,
+    scheduleVerification,
+  };
 }
 
 async function getLoginState(page) {
@@ -646,10 +745,12 @@ async function launchBrowserForUser(username, password, cookie = null) {
       externalScript,
       isAutoLike
     ); //变量必须从外部显示的传入, 因为在浏览器上下文它是读取不了的
-    // 添加一个监听器来监听每次页面加载完成的事件
-    page.on("load", async () => {
-      // await page.evaluate(externalScript); //因为这个是在页面加载好之后执行的,而脚本是在页面加载好时刻来判断是否要执行，由于已经加载好了，脚本就不会起作用
-    });
+    const automationController = createNavigationAwareInjectionController(
+      page,
+      specificUser,
+      externalScript,
+      isAutoLike,
+    );
     // 如果是Linuxdo，就导航到我的帖子，但我感觉这里写没什么用，因为外部脚本已经定义好了，不对，这里不会点击按钮，所以不会跳转，需要手动跳转
     if (loginUrl == "https://linux.do") {
       await page.goto("https://linux.do/t/topic/13716/790", {
@@ -669,18 +770,10 @@ async function launchBrowserForUser(username, password, cookie = null) {
     }
     console.log(`[auto-read] Navigated to ${page.url()} before injection verification`);
     // Ensure automation injected after navigation (fallback in case init-script failed)
-    const injected = await injectAutomationWithRetry(
-      page,
-      specificUser,
-      externalScript,
-      isAutoLike,
+    await automationController.runVerification(
+      `initial post-login navigation on ${page.url()}`,
       5,
     );
-    if (!injected) {
-      console.warn(
-        `[auto-read] Automation injection could not be verified after navigation on ${page.url()}`,
-      );
-    }
     if (token && chatId) {
       sendToTelegram(`${username} 登录成功`);
     } // 监听页面跳转到新话题，自动推送RSS example：https://linux.do/t/topic/525305.rss
