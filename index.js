@@ -20,6 +20,11 @@
 
 (function () {
   ("use strict");
+  if (window.__autoReadScriptBootstrapped) {
+    console.log("[auto-read] script already bootstrapped on this document");
+    return;
+  }
+  window.__autoReadScriptBootstrapped = true;
   // 定义可能的基本URL
   const possibleBaseURLs = [
     "https://linux.do",
@@ -81,6 +86,7 @@
   let pendingTopicOpenTimeout = null;
   let pendingTopicOpenAt = 0;
   let lastCooldownLogAt = 0;
+  let pageAutomationInitialized = false;
 
   function stopScrolling() {
     if (scrollInterval !== null) {
@@ -354,13 +360,19 @@
     }
   }
 
-  // 入口函数
-  window.addEventListener("load", () => {
+  function startAutomationForCurrentPage(entrySource) {
+    if (pageAutomationInitialized) {
+      console.log(
+        `[auto-read] startAutomation skipped because this document is already initialized (${entrySource})`
+      );
+      return;
+    }
+    pageAutomationInitialized = true;
     checkFirstRun();
     const readEnabled = localStorage.getItem("read") === "true";
     const autoLikeEnabled = isAutoLikeEnabled();
     console.log(
-      `[auto-read] load handler: read=${
+      `[auto-read] automation start (${entrySource}): read=${
         readEnabled ? "enabled" : "disabled"
       }, auto-like=${autoLikeEnabled ? "enabled" : "disabled"}`
     );
@@ -376,7 +388,16 @@
     } else {
       console.log("[auto-read] 本页未开启自动阅读，跳过滚动和点赞");
     }
-  });
+  }
+
+  // 入口函数
+  if (document.readyState === "loading") {
+    window.addEventListener("load", () => {
+      startAutomationForCurrentPage("window.load");
+    });
+  } else {
+    startAutomationForCurrentPage(`document.${document.readyState}`);
+  }
 
   // 获取当前时间戳
   const currentTime = Date.now();
