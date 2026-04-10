@@ -395,6 +395,59 @@ function createNavigationAwareInjectionController(
   };
 }
 
+async function logAutomationSnapshot(page, username, reason) {
+  try {
+    const snapshot = await page.evaluate(() => {
+      const status = window.__autoReadStatus || null;
+      return {
+        href: window.location.href,
+        readyState: document.readyState,
+        status,
+        localRead: localStorage.getItem("read"),
+        localAutoLikeEnabled: localStorage.getItem("autoLikeEnabled"),
+        autoReadLikeClickCount: localStorage.getItem("autoReadLikeClickCount"),
+        autoReadLastLikeAt: localStorage.getItem("autoReadLastLikeAt"),
+      };
+    });
+
+    console.log(
+      `[auto-read] Snapshot for ${maskUsername(username)} after ${reason}: href=${snapshot.href}, readyState=${snapshot.readyState}, read=${snapshot.localRead}, autoLikeEnabled=${snapshot.localAutoLikeEnabled}, reactionButtons=${
+        snapshot.status && snapshot.status.reactionButtonCount !== undefined
+          ? snapshot.status.reactionButtonCount
+          : "n/a"
+      }, likeCandidates=${
+        snapshot.status && snapshot.status.likeCandidateCount !== undefined
+          ? snapshot.status.likeCandidateCount
+          : "n/a"
+      }, lastResult=${
+        snapshot.status && snapshot.status.autoLikeLastResult
+          ? snapshot.status.autoLikeLastResult
+          : "n/a"
+      }, likeClicks=${
+        snapshot.autoReadLikeClickCount || "0"
+      }, lastLikeAt=${snapshot.autoReadLastLikeAt || "n/a"}`,
+    );
+
+    if (
+      snapshot.status &&
+      Array.isArray(snapshot.status.sampleButtonLabels) &&
+      snapshot.status.sampleButtonLabels.length > 0
+    ) {
+      console.log(
+        `[auto-read] Sample reaction labels for ${maskUsername(
+          username
+        )}: ${snapshot.status.sampleButtonLabels.join("; ")}`,
+      );
+    }
+  } catch (e) {
+    console.warn(
+      `[auto-read] Failed to read automation snapshot for ${maskUsername(
+        username
+      )} after ${reason}: ${e && e.message ? e.message : e}`,
+    );
+  }
+}
+
 async function getLoginState(page) {
   const pageTitle = await page.title().catch(() => "");
   return await page.evaluate((pageTitle) => {
@@ -791,6 +844,12 @@ async function launchBrowserForUser(username, password, cookie = null) {
     await automationController.runVerification(
       `initial post-login navigation on ${page.url()}`,
       5,
+    );
+    await delayClick(1200);
+    await logAutomationSnapshot(
+      page,
+      username,
+      `initial post-login navigation on ${page.url()}`,
     );
     if (token && chatId) {
       sendToTelegram(`${username} 登录成功`);

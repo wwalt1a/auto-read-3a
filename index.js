@@ -25,6 +25,7 @@
     return;
   }
   window.__autoReadScriptBootstrapped = true;
+  window.__autoReadStatus = window.__autoReadStatus || {};
   // 定义可能的基本URL
   const possibleBaseURLs = [
     "https://linux.do",
@@ -88,6 +89,15 @@
   let lastCooldownLogAt = 0;
   let pageAutomationInitialized = false;
 
+  function updateAutoReadStatus(patch) {
+    window.__autoReadStatus = {
+      ...(window.__autoReadStatus || {}),
+      ...patch,
+      href: window.location.href,
+      updatedAt: Date.now(),
+    };
+  }
+
   function stopScrolling() {
     if (scrollInterval !== null) {
       clearInterval(scrollInterval);
@@ -144,6 +154,11 @@
       localStorage.setItem("autoReadPageKey", pageKey);
       localStorage.setItem("autoReadPageStartedAt", Date.now().toString());
       localStorage.setItem("autoReadPageDwellMs", dwellMs.toString());
+      updateAutoReadStatus({
+        currentPageKey: pageKey,
+        currentPageStartedAt: Date.now(),
+        currentPageDwellMs: dwellMs,
+      });
       console.log(
         `[auto-read] 进入新主题 ${pageKey}，计划停留 ${Math.ceil(
           dwellMs / 1000
@@ -218,6 +233,11 @@
 
     clearPendingTopicOpen();
     pendingTopicOpenAt = nextRunAt;
+    updateAutoReadStatus({
+      nextTopicReason: reason,
+      nextTopicScheduledAt: nextRunAt,
+      nextTopicWaitMs: totalWaitMs,
+    });
     console.log(
       `[auto-read] ${reason}，将在 ${Math.ceil(totalWaitMs / 1000)} 秒后打开下一篇`
     );
@@ -325,6 +345,10 @@
     const cooldownRemainingMs = getCooldownRemainingMs();
     if (cooldownRemainingMs > 0) {
       stopScrolling();
+      updateAutoReadStatus({
+        cooldownRemainingMs,
+        cooldownUntil: Date.now() + cooldownRemainingMs,
+      });
       if (Date.now() - lastCooldownLogAt > 10000) {
         console.log(
           `[auto-read] 429 冷却中，剩余 ${Math.ceil(
@@ -371,6 +395,13 @@
     checkFirstRun();
     const readEnabled = localStorage.getItem("read") === "true";
     const autoLikeEnabled = isAutoLikeEnabled();
+    updateAutoReadStatus({
+      initialized: true,
+      initializationSource: entrySource,
+      readEnabled,
+      autoLikeEnabled,
+      documentReadyState: document.readyState,
+    });
     console.log(
       `[auto-read] automation start (${entrySource}): read=${
         readEnabled ? "enabled" : "disabled"
@@ -481,7 +512,16 @@
     const buttons = Array.from(document.querySelectorAll(
       ".discourse-reactions-reaction-button"
     ));
+    updateAutoReadStatus({
+      autoLikeScanAt: Date.now(),
+      reactionButtonCount: buttons.length,
+      clickCounter,
+    });
     if (buttons.length === 0) {
+      updateAutoReadStatus({
+        likeCandidateCount: 0,
+        autoLikeLastResult: "no-reaction-buttons",
+      });
       console.error(
         "[auto-read] No buttons found with the selector '.discourse-reactions-reaction-button'"
       );
@@ -495,6 +535,14 @@
     const likeCandidates = buttonInfos.filter(({ info }) =>
       isLikelyLikeButton(info)
     );
+    updateAutoReadStatus({
+      likeCandidateCount: likeCandidates.length,
+      autoLikeLastResult:
+        likeCandidates.length > 0 ? "candidates-found" : "no-candidates",
+      sampleButtonLabels: buttonInfos
+        .slice(0, 5)
+        .map(({ index, info }) => `#${index + 1}[${info.label || "empty"}]`),
+    });
     console.log(
       `[auto-read] Found ${buttons.length} reaction buttons, ${likeCandidates.length} like candidates.`
     );
@@ -517,6 +565,10 @@
       // 新增：点赞前加一个随机概率判断（如30%概率）
       const likeProbability = 0.3; // 0~1之间，0.3表示30%概率
       if (Math.random() > likeProbability) {
+        updateAutoReadStatus({
+          autoLikeLastResult: "skipped-by-probability",
+          autoLikeLastCandidateLabel: info.label || "empty",
+        });
         console.log(
           `[auto-read] 跳过第${index + 1}个点赞候选按钮（未通过概率判断），label=${
             info.label || "empty"
@@ -531,17 +583,24 @@
       autoLikeInterval = setTimeout(() => {
         // 模拟点击
         triggerClick(button); // 使用自定义的触发点击方法
+        const likeClickAt = Date.now();
         console.log(
           `[auto-read] Clicked like button ${index + 1}, label=${
             info.label || "empty"
           }, delay=${randomDelay}ms`
         );
         clickCounter++; // 更新点击计数器
+        updateAutoReadStatus({
+          autoLikeLastResult: "clicked",
+          autoLikeLastCandidateLabel: info.label || "empty",
+          autoLikeLastClickAt: likeClickAt,
+          clickCounter,
+        });
         localStorage.setItem(
           "autoReadLikeClickCount",
           clickCounter.toString()
         );
-        localStorage.setItem("autoReadLastLikeAt", Date.now().toString());
+        localStorage.setItem("autoReadLastLikeAt", likeClickAt.toString());
         // 将新的点击计数存储到localStorage
         localStorage.setItem("clickCounter", clickCounter.toString());
         // 如果点击次数达到likeLimit次，则设置点赞变量为false
