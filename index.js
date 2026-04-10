@@ -402,33 +402,99 @@
     button.dispatchEvent(event);
   }
 
+  function getButtonDebugInfo(button) {
+    const title = button.getAttribute("title") || "";
+    const ariaLabel = button.getAttribute("aria-label") || "";
+    const text = (button.textContent || "").trim().replace(/\s+/g, " ");
+    const ariaPressed = button.getAttribute("aria-pressed") || "";
+    const className =
+      typeof button.className === "string" ? button.className : "";
+    const label = [title, ariaLabel, text].filter(Boolean).join(" | ");
+    return {
+      title,
+      ariaLabel,
+      text,
+      ariaPressed,
+      className,
+      label,
+    };
+  }
+
+  function isAlreadyLikedButton(info) {
+    if (info.ariaPressed === "true") {
+      return true;
+    }
+
+    const negativePattern =
+      /(unlike|取消|撤销|收回|已赞|已点赞|remove your reaction)/i;
+    if (negativePattern.test(info.label)) {
+      return true;
+    }
+
+    return /(has-reacted|user-reacted|reacted)/i.test(info.className);
+  }
+
+  function isLikelyLikeButton(info) {
+    if (isAlreadyLikedButton(info)) {
+      return false;
+    }
+
+    const positivePattern =
+      /(点赞此帖子|点赞|Like this post|^like$|赞此帖|赞本帖|赞)/i;
+    if (positivePattern.test(info.label)) {
+      return true;
+    }
+
+    return info.label === "" && info.ariaPressed === "false";
+  }
+
   function autoLike() {
-    console.log(`Initial clickCounter: ${clickCounter}`);
+    console.log(`[auto-read] Initial clickCounter: ${clickCounter}`);
     // 寻找所有的discourse-reactions-reaction-button
-    const buttons = document.querySelectorAll(
+    const buttons = Array.from(document.querySelectorAll(
       ".discourse-reactions-reaction-button"
-    );
+    ));
     if (buttons.length === 0) {
       console.error(
-        "No buttons found with the selector '.discourse-reactions-reaction-button'"
+        "[auto-read] No buttons found with the selector '.discourse-reactions-reaction-button'"
       );
       return;
     }
-    console.log(`Found ${buttons.length} buttons.`); // 调试信息
+    const buttonInfos = buttons.map((button, index) => ({
+      button,
+      index,
+      info: getButtonDebugInfo(button),
+    }));
+    const likeCandidates = buttonInfos.filter(({ info }) =>
+      isLikelyLikeButton(info)
+    );
+    console.log(
+      `[auto-read] Found ${buttons.length} reaction buttons, ${likeCandidates.length} like candidates.`
+    );
+    if (likeCandidates.length === 0) {
+      console.log(
+        `[auto-read] Sample button labels: ${buttonInfos
+          .slice(0, 5)
+          .map(({ index, info }) => `#${index + 1}[${info.label || "empty"}]`)
+          .join("; ")}`
+      );
+      return;
+    }
 
     // 逐个点击找到的按钮
-    buttons.forEach((button, index) => {
-      if (
-        (button.title !== "点赞此帖子" && button.title !== "Like this post") ||
-        clickCounter >= likeLimit
-      ) {
+    likeCandidates.forEach(({ button, index, info }) => {
+      if (clickCounter >= likeLimit) {
         return;
       }
 
       // 新增：点赞前加一个随机概率判断（如30%概率）
       const likeProbability = 0.3; // 0~1之间，0.3表示30%概率
       if (Math.random() > likeProbability) {
-        console.log(`跳过第${index + 1}个按钮（未通过概率判断）`);
+        console.log(
+          `[auto-read] 跳过第${index + 1}个点赞候选按钮（未通过概率判断），label=${
+            info.label || "empty"
+          }`
+        );
         return;
       }
 
@@ -438,18 +504,25 @@
       autoLikeInterval = setTimeout(() => {
         // 模拟点击
         triggerClick(button); // 使用自定义的触发点击方法
-        console.log(`Clicked like button ${index + 1}`);
+        console.log(
+          `[auto-read] Clicked like button ${index + 1}, label=${
+            info.label || "empty"
+          }, delay=${randomDelay}ms`
+        );
         clickCounter++; // 更新点击计数器
+        localStorage.setItem(
+          "autoReadLikeClickCount",
+          clickCounter.toString()
+        );
+        localStorage.setItem("autoReadLastLikeAt", Date.now().toString());
         // 将新的点击计数存储到localStorage
         localStorage.setItem("clickCounter", clickCounter.toString());
         // 如果点击次数达到likeLimit次，则设置点赞变量为false
         if (clickCounter === likeLimit) {
-          console.log(
-            `Reached ${likeLimit} likes, setting the like variable to false.`
-          );
+          console.log(`[auto-read] Reached ${likeLimit} likes, disabling auto-like.`);
           localStorage.setItem("autoLikeEnabled", "false"); // 使用localStorage存储点赞变量状态
         } else {
-          console.log("clickCounter:", clickCounter);
+          console.log(`[auto-read] clickCounter: ${clickCounter}`);
         }
       }, index * randomDelay); // 每次点赞的延迟为随机值
     });
