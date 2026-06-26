@@ -1019,35 +1019,54 @@ async function login(page, username, password, retryCount = 3) {
 }
 
 async function navigatePage(url, page, browser) {
-  try {
-    page.setDefaultNavigationTimeout(
-      parseInt(process.env.NAV_TIMEOUT_MS || process.env.NAV_TIMEOUT || "120000", 10)
-    );
-  } catch {}
-  await page.goto(url, { waitUntil: "domcontentloaded" }); //如果使用默认的load,linux下页面会一直加载导致无法继续执行
+    try {
+      page.setDefaultNavigationTimeout(
+        parseInt(process.env.NAV_TIMEOUT_MS || process.env.NAV_TIMEOUT || "180000", 10)
+      );
+    } catch {}
+    await page.goto(url, { waitUntil: "domcontentloaded" });
 
-  const startTime = Date.now(); // 记录开始时间
-  let pageTitle = await page.title(); // 获取当前页面标题
+    const startTime = Date.now();
+    const maxWaitMs = 120000; // 最长等待 120 秒
 
-  while (pageTitle.includes("Just a moment") || pageTitle.includes("请稍候")) {
-    console.log("The page is under Cloudflare protection. Waiting...");
+    while (true) {
+      const pageTitle = await page.title();
+      const urlNow = page.url();
 
-    await delayClick(2000); // 每次检查间隔2秒
+      // 多种 Cloudflare 特征检测
+      const isCfChallenge =
+        pageTitle.includes("Just a moment") ||
+        pageTitle.includes("请稍候") ||
+        pageTitle.includes("Attention Required") ||
+        urlNow.includes("challenges.cloudflare.com") ||
+        urlNow.includes("/cdn-cgi/");
 
-    // 重新获取页面标题
-    pageTitle = await page.title();
+      if (!isCfChallenge) {
+        console.log("页面标题：", pageTitle);
+        break;
+      }
 
-    // 检查是否超过15秒
-    if (Date.now() - startTime > 35000) {
-      console.log("Timeout exceeded, aborting actions.");
-      sendToTelegram(`超时了,无法通过Cloudflare验证`);
-      await browser.close();
-      // todo: 这里其实不能关的m因为我们是在最后统一关的你不能在这里关m如果你在这关,后面就会触发attempted to sue detached frame
-      return; // 超时则退出函数
+      console.log("[CF] 检测到 Cloudflare 挑战，等待通过...");
+
+      // 模拟人类行为：随机鼠标移动 + 滚动
+      try {
+        await page.mouse.move(
+          100 + Math.random() * 400,
+          100 + Math.random() * 300
+        );
+        await page.evaluate(() => window.scrollBy(0, Math.random() * 200 - 50));
+      } catch {}
+
+      await new Promise((r) => setTimeout(r, 2500 + Math.random() * 1500));
+
+      if (Date.now() - startTime > maxWaitMs) {
+        console.log("CF 挑战等待超时，放弃本次登录");
+        sendToTelegram(`超时了,无法通过Cloudflare验证`);
+        await browser.close();
+        return;
+      }
     }
   }
-  console.log("页面标题：", pageTitle);
-}
 
 // 每秒截图功能
 async function takeScreenshots(page) {
@@ -1165,6 +1184,7 @@ healthApp.listen(HEALTH_PORT, () => {
     `Health check endpoint is running at http://localhost:${HEALTH_PORT}/health`
   );
 });
+
 
 
 
