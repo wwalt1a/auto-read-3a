@@ -83,19 +83,15 @@ const passwords = process.env.PASSWORDS ? process.env.PASSWORDS.split(",") : [];
 // 读取每个账号对应的Cookie（逗号分隔，与USERNAMES一一对应），有Cookie则跳过表单登录
 const cookiesEnv = process.env.COOKIES ? process.env.COOKIES.split(",") : [];
 const loginUrl = process.env.WEBSITE || "https://linux.do"; //在GitHub action环境里它不能读取默认环境变量,只能在这里设置默认值
-const delayBetweenInstances = 10000;
+const delayBetweenInstances = Math.floor(Math.random() * (90000 - 60000 + 1)) + 60000; // 随机 60~90 秒
 const totalAccounts = usernames.length; // 总的账号数
-const delayBetweenBatches =
-  runTimeLimitMillis / Math.ceil(totalAccounts / maxConcurrentAccounts);
+const delayBetweenBatches = Math.floor(Math.random() * (90000 - 60000 + 1)) + 60000; // 随机 60~90 秒
 const isLikeSpecificUser = process.env.LIKE_SPECIFIC_USER === "true"; // 只有明确设置为"true"才开启
 const isAutoLike = process.env.AUTO_LIKE !== "false"; // 默认开启，只有明确设置为"false"才关闭
 const hideAccountInfo = process.env.HIDE_ACCOUNT_INFO !== "false"; // 默认隐藏账号信息，只有明确设置为"false"才显示
 const enableRssFetch = process.env.ENABLE_RSS_FETCH === "true"; // 是否开启抓取RSS，只有明确设置为"true"才开启，默认为false
 const enableTopicDataFetch = process.env.ENABLE_TOPIC_DATA_FETCH === "true"; // 是否开启抓取话题数据，只有明确设置为"true"才开启，默认为false
-const autoRead429CooldownMs = parseInt(
-  process.env.AUTO_READ_429_COOLDOWN_MS || "480000",
-  10,
-);
+const autoRead429CooldownMs = process.env.AUTO_READ_429_COOLDOWN_MS ? parseInt(process.env.AUTO_READ_429_COOLDOWN_MS, 10) : Math.floor(Math.random() * (90000 - 60000 + 1)) + 60000; // 默认随机 60~90 秒
 
 // 账号名脱敏函数，默认仅显示首字母加***
 function maskUsername(username) {
@@ -1169,3 +1165,6 @@ healthApp.listen(HEALTH_PORT, () => {
     `Health check endpoint is running at http://localhost:${HEALTH_PORT}/health`
   );
 });
+
+
+
